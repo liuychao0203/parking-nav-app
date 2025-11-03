@@ -10,6 +10,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 90  # 增加构建超时时间到90分钟
     
     steps:
     - name: 检出代码
@@ -57,10 +58,10 @@ jobs:
           buildozer-local-
     
     - name: 构建 APK
+      timeout-minutes: 60  # 单独为构建步骤设置60分钟超时
       run: |
-        # 接受所有 Android SDK licenses
-        yes | buildozer android debug || true
-        buildozer android debug
+        # 使用详细模式构建，获取更多日志信息
+        buildozer -v android debug
     
     - name: 查找生成的 APK
       id: find-apk
