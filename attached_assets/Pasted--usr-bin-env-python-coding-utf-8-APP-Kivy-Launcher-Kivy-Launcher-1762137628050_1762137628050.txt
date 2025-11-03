@@ -1,0 +1,293 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+车位导航手机APP - Kivy Launcher版本
+可以直接在Kivy Launcher中运行
+"""
+
+from kivy.app import App
+from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.floatlayout import FloatLayout
+from kivy.uix.button import Button
+from kivy.uix.label import Label
+from kivy.uix.textinput import TextInput
+from kivy.properties import StringProperty, BooleanProperty
+from kivy.clock import Clock
+from kivy.core.window import Window
+from kivy.utils import platform
+
+# Android上导入
+if platform == 'android':
+    try:
+        from jnius import autoclass
+        from android.permissions import request_permissions, Permission
+        
+        # 请求权限
+        request_permissions([
+            Permission.BLUETOOTH,
+            Permission.BLUETOOTH_ADMIN,
+            Permission.ACCESS_FINE_LOCATION
+        ])
+        
+        BluetoothAdapter = autoclass('android.bluetooth.BluetoothAdapter')
+        BluetoothDevice = autoclass('android.bluetooth.BluetoothDevice')
+        BluetoothSocket = autoclass('android.bluetooth.BluetoothSocket')
+        UUID = autoclass('java.util.UUID')
+        BLUETOOTH_AVAILABLE = True
+    except Exception as e:
+        print(f"蓝牙初始化失败: {e}")
+        BLUETOOTH_AVAILABLE = False
+else:
+    BLUETOOTH_AVAILABLE = False
+
+def parse_parking_space(space_str):
+    """解析车位号为坐标 A11 -> (1,1)"""
+    space_str = space_str.strip().upper()
+    if len(space_str) != 3:
+        return None
+    
+    letter = space_str[0]
+    if letter not in 'ABCD':
+        return None
+    x = ord(letter) - ord('A')
+    
+    try:
+        y = int(space_str[1])
+        if y > 3:
+            return None
+        return (x, y)
+    except:
+        return None
+
+class BLEManager:
+    """蓝牙管理器"""
+    def __init__(self):
+        self.connected = False
+        self.socket = None
+        self.adapter = None
+        
+        if platform == 'android' and BLUETOOTH_AVAILABLE:
+            self.adapter = BluetoothAdapter.getDefaultAdapter()
+    
+    def scan_devices(self):
+        """扫描蓝牙设备"""
+        if not self.adapter:
+            return []
+        
+        try:
+            paired_devices = self.adapter.getBondedDevices().toArray()
+            devices = []
+            for device in paired_devices:
+                devices.append({
+                    'name': device.getName(),
+                    'address': device.getAddress()
+                })
+            return devices
+        except:
+            return []
+    
+    def connect(self, address):
+        """连接蓝牙设备"""
+        if not self.adapter:
+            return False
+        
+        try:
+            device = self.adapter.getRemoteDevice(address)
+            uuid = UUID.fromString("00001101-0000-1000-8000-00805f9b34fb")
+            self.socket = device.createRfcommSocketToServiceRecord(uuid)
+            self.socket.connect()
+            self.connected = True
+            return True
+        except Exception as e:
+            print(f"连接失败: {e}")
+            self.connected = False
+            return False
+    
+    def send_data(self, data):
+        """发送数据"""
+        if not self.connected or not self.socket:
+            return False
+        
+        try:
+            output_stream = self.socket.getOutputStream()
+            output_stream.write(data)
+            return True
+        except:
+            return False
+    
+    def disconnect(self):
+        """断开连接"""
+        try:
+            if self.socket:
+                self.socket.close()
+        except:
+            pass
+        self.connected = False
+
+class ParkingApp(FloatLayout):
+    """车位导航APP主界面"""
+    
+    status_text = StringProperty("请输入车位号")
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.ble_manager = BLEManager()
+        self.devices = []
+        self.selected_device = None
+        self.build_ui()
+    
+    def build_ui(self):
+        """构建UI"""
+        layout = BoxLayout(orientation='vertical', padding=20, spacing=15)
+        
+        # 标题
+        title = Label(
+            text='车位导航',
+            font_size='32sp',
+            bold=True,
+            size_hint_y=0.15
+        )
+        
+        # 输入框
+        self.input_box = TextInput(
+            hint_text='输入车位号(如A11)',
+            font_size='24sp',
+            size_hint_y=0.15,
+            multiline=False
+        )
+        
+        # 发送按钮
+        send_btn = Button(
+            text='发送导航',
+            font_size='20sp',
+            size_hint_y=0.12,
+            background_color=(0.13, 0.59, 0.95, 1)
+        )
+        send_btn.bind(on_press=self.on_send_clicked)
+        
+        # 扫描按钮
+        scan_btn = Button(
+            text='扫描设备',
+            font_size='18sp',
+            size_hint_y=0.1,
+            background_color=(1, 0.25, 0.51, 1)
+        )
+        scan_btn.bind(on_press=self.on_scan_clicked)
+        
+        # 连接按钮
+        connect_btn = Button(
+            text='连接设备',
+            font_size='18sp',
+            size_hint_y=0.1,
+            background_color=(0.3, 0.69, 0.31, 1)
+        )
+        connect_btn.bind(on_press=self.on_connect_clicked)
+        
+        # 设备列表
+        self.device_list = BoxLayout(
+            orientation='vertical',
+            size_hint_y=0.25,
+            spacing=5
+        )
+        
+        # 状态栏
+        self.status_label = Label(
+            text=self.status_text,
+            font_size='16sp',
+            size_hint_y=0.08
+        )
+        
+        layout.add_widget(title)
+        layout.add_widget(self.input_box)
+        layout.add_widget(send_btn)
+        layout.add_widget(scan_btn)
+        layout.add_widget(connect_btn)
+        layout.add_widget(self.device_list)
+        layout.add_widget(self.status_label)
+        
+        self.add_widget(layout)
+    
+    def on_send_clicked(self, instance):
+        """发送按钮"""
+        space = self.input_box.text.strip()
+        if not space:
+            self.set_status("请输入车位号")
+            return
+        
+        coord = parse_parking_space(space)
+        if coord is None:
+            self.set_status("车位号格式错误")
+            return
+        
+        if not self.ble_manager.connected:
+            self.set_status("请先连接设备")
+            return
+        
+        x, y = coord
+        command = f"({x},{y})"
+        data = command.encode('ascii')
+        
+        if self.ble_manager.send_data(data):
+            self.set_status(f"已发送: {space} -> ({x},{y})")
+        else:
+            self.set_status("发送失败")
+    
+    def on_scan_clicked(self, instance):
+        """扫描按钮"""
+        self.set_status("正在扫描...")
+        devices = self.ble_manager.scan_devices()
+        self.devices = devices
+        
+        self.device_list.clear_widgets()
+        
+        for i, device in enumerate(devices[:3]):
+            name = device['name'] or "未命名"
+            if len(name) > 20:
+                name = name[:17] + "..."
+            
+            btn = Button(
+                text=name,
+                font_size='16sp',
+                background_color=(0.46, 0.46, 0.46, 1)
+            )
+            btn.device_index = i
+            btn.bind(on_press=self.on_device_selected)
+            self.device_list.add_widget(btn)
+        
+        if devices:
+            self.set_status(f"找到 {len(devices)} 个设备")
+        else:
+            self.set_status("未找到设备")
+    
+    def on_device_selected(self, instance):
+        """选择设备"""
+        index = instance.device_index
+        self.selected_device = self.devices[index]
+        self.set_status(f"已选择: {self.selected_device['name']}")
+    
+    def on_connect_clicked(self, instance):
+        """连接按钮"""
+        if not self.selected_device:
+            self.set_status("请先扫描设备")
+            return
+        
+        self.set_status("正在连接...")
+        
+        if self.ble_manager.connect(self.selected_device['address']):
+            self.set_status("连接成功")
+        else:
+            self.set_status("连接失败")
+    
+    def set_status(self, msg):
+        """设置状态"""
+        self.status_text = msg
+        self.status_label.text = msg
+
+class ParkingNavApp(App):
+    def build(self):
+        self.title = '车位导航'
+        return ParkingApp()
+
+if __name__ == '__main__':
+    ParkingNavApp().run()
+
