@@ -1,0 +1,117 @@
+name: 构建 Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 检出代码
+      uses: actions/checkout@v3
+    
+    - name: 设置 Python 环境
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: 设置 Java 环境
+      uses: actions/setup-java@v3
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+    
+    - name: 安装系统依赖
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          git zip unzip openjdk-17-jdk wget \
+          autoconf libtool pkg-config zlib1g-dev \
+          libncurses5-dev libncursesw5-dev libtinfo5 \
+          cmake libffi-dev libssl-dev
+    
+    - name: 安装 Buildozer 和 Cython
+      run: |
+        pip3 install --upgrade pip
+        pip3 install buildozer cython==0.29.33
+    
+    - name: 缓存 Buildozer 全局目录
+      uses: actions/cache@v3
+      with:
+        path: ~/.buildozer
+        key: buildozer-global-${{ hashFiles('buildozer.spec') }}
+        restore-keys: |
+          buildozer-global-
+    
+    - name: 缓存 Buildozer 本地目录
+      uses: actions/cache@v3
+      with:
+        path: .buildozer
+        key: buildozer-local-${{ hashFiles('buildozer.spec') }}
+        restore-keys: |
+          buildozer-local-
+    
+    - name: 构建 APK
+      run: |
+        # 接受所有 Android SDK licenses
+        yes | buildozer android debug || true
+        buildozer android debug
+    
+    - name: 查找生成的 APK
+      id: find-apk
+      run: |
+        APK_FILE=$(find bin -name "*.apk" -type f | head -1)
+        echo "APK文件: $APK_FILE"
+        echo "apk_path=$APK_FILE" >> $GITHUB_OUTPUT
+        if [ -f "$APK_FILE" ]; then
+          echo "文件大小: $(du -h "$APK_FILE" | cut -f1)"
+        fi
+    
+    - name: 上传 APK
+      uses: actions/upload-artifact@v3
+      with:
+        name: parkingnav-apk
+        path: bin/*.apk
+        retention-days: 30
+    
+    - name: 获取版本信息
+      id: version
+      run: |
+        VERSION=$(grep "^version = " buildozer.spec | cut -d= -f2 | tr -d ' ')
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+    
+    - name: 创建 Release（仅限主分支）
+      if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v${{ steps.version.outputs.version }}-${{ github.run_number }}
+        name: 车位导航 v${{ steps.version.outputs.version }} (Build ${{ github.run_number }})
+        body: |
+          ## 🚗 车位导航 Android APK
+          
+          ### 📦 安装说明
+          1. 下载下面的 APK 文件
+          2. 传输到 Android 设备
+          3. 启用"允许安装未知来源应用"
+          4. 点击安装
+          
+          ### 🔧 构建信息
+          - 构建时间: ${{ github.event.head_commit.timestamp }}
+          - 提交: ${{ github.sha }}
+          - 分支: ${{ github.ref_name }}
+          
+          ### 📱 应用功能
+          - 蓝牙设备连接
+          - 车位导航指令发送
+          - 支持 Android 5.0+
+        files: bin/*.apk
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
